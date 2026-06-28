@@ -293,11 +293,11 @@ function generateRouteGroupDesc(name, routes) {
   const postCt = methods.filter(m => m === 'POST').length;
   const deleteCt = methods.filter(m => m === 'DELETE').length;
 
-  let desc = `The ${name} wing. ${routes.length} endpoint${routes.length > 1 ? 's' : ''} reside here.`;
+  let desc = `The ${name} wing. ${routes.length} endpoint${routes.length > 1 ? 's' : ''} reside${routes.length === 1 ? 's' : ''} here.`;
 
-  if (getCt > 0) desc += ` ${getCt} read portal${getCt > 1 ? 's' : ''} glow softly.`;
-  if (postCt > 0) desc += ` ${postCt} creation altar${postCt > 1 ? 's' : ''} pulse with energy.`;
-  if (deleteCt > 0) desc += ` ${deleteCt} destruction rune${deleteCt > 1 ? 's' : ''} smolder dangerously.`;
+  if (getCt > 0) desc += ` ${getCt} read portal${getCt > 1 ? 's' : ''} glow${getCt === 1 ? 's' : ''} softly.`;
+  if (postCt > 0) desc += ` ${postCt} creation altar${postCt > 1 ? 's' : ''} pulse${postCt === 1 ? 's' : ''} with energy.`;
+  if (deleteCt > 0) desc += ` ${deleteCt} destruction rune${deleteCt > 1 ? 's' : ''} smolder${deleteCt === 1 ? 's' : ''} dangerously.`;
 
   return desc;
 }

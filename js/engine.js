@@ -240,10 +240,19 @@ export class Engine {
       }
     }
 
-    // item count
-    const fileCount = room.items.filter(i => i.type === 'file').length;
-    if (fileCount > 0) {
-      this.renderer.print(`  ${fileCount} file${fileCount > 1 ? 's' : ''} to examine (type 'ls' to list)`, 'dim');
+    // show all items with examine hints
+    const allItems = room.items;
+    if (allItems.length > 0) {
+      if (special.length === 0) this.renderer.print('');
+      const regularItems = allItems.filter(i => i.type === 'file');
+      if (regularItems.length > 0) {
+        this.renderer.print(`  ${regularItems.length} more item${regularItems.length > 1 ? 's' : ''} to examine`, 'dim');
+      }
+      if (allItems.length === 1) {
+        this.renderer.print(`  Type 'examine' to inspect it`, 'dim');
+      } else {
+        this.renderer.print(`  Type 'examine 1' or 'examine <name>' to inspect`, 'dim');
+      }
     }
   }
 
@@ -352,17 +361,50 @@ export class Engine {
 
   async cmdExamine(fileName) {
     if (!fileName) {
-      this.renderer.print('Examine what? Specify a filename.', 'warning');
-      return;
+      // if only one item, auto-examine it
+      if (this.currentRoom.items.length === 1) {
+        fileName = this.currentRoom.items[0].name;
+      } else if (this.currentRoom.items.length === 0) {
+        this.renderer.print('Nothing to examine here.', 'dim');
+        return;
+      } else {
+        this.renderer.print('Examine what? Options:', 'warning');
+        for (let i = 0; i < this.currentRoom.items.length; i++) {
+          this.renderer.print(`  ${i + 1}. ${this.currentRoom.items[i].displayName}`, 'dim');
+        }
+        this.renderer.print('  Use: examine <number> or examine <name>', 'dim');
+        return;
+      }
     }
 
-    const item = this.currentRoom.items.find(
-      i => i.name.toLowerCase() === fileName.toLowerCase() ||
-           i.displayName.toLowerCase() === fileName.toLowerCase()
-    );
+    // match by: exact name, display name, index number, partial/fuzzy match
+    let item = null;
+
+    // try numeric index first
+    const idx = parseInt(fileName);
+    if (!isNaN(idx) && idx >= 1 && idx <= this.currentRoom.items.length) {
+      item = this.currentRoom.items[idx - 1];
+    }
+
+    // exact match
+    if (!item) {
+      item = this.currentRoom.items.find(
+        i => i.name.toLowerCase() === fileName.toLowerCase() ||
+             i.displayName.toLowerCase() === fileName.toLowerCase()
+      );
+    }
+
+    // partial match (contains the search term)
+    if (!item) {
+      item = this.currentRoom.items.find(
+        i => i.name.toLowerCase().includes(fileName.toLowerCase()) ||
+             i.displayName.toLowerCase().includes(fileName.toLowerCase()) ||
+             (i.path && i.path.toLowerCase().includes(fileName.toLowerCase()))
+      );
+    }
 
     if (!item) {
-      this.renderer.print(`Nothing called '${fileName}' here.`, 'warning');
+      this.renderer.print(`Nothing matching '${fileName}' here. Type 'ls' to see what's available.`, 'warning');
       return;
     }
 
