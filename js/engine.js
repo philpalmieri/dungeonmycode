@@ -63,7 +63,9 @@ export class Engine {
       case 'cd':      return this.cmdGo(arg);
       case 'ls':      return this.cmdLs();
       case 'examine':
-      case 'cat':     return this.cmdExamine(arg);
+      case 'cat':
+      case 'inspect':
+      case 'x':       return this.cmdExamine(arg);
       case 'map':     return this.cmdMap();
       case 'stats':   return this.cmdStats();
       case 'search':  return this.cmdSearch();
@@ -74,6 +76,23 @@ export class Engine {
       case 'quit':
       case 'exit':    return this.cmdQuit();
       default:
+        // try the full input as an item to examine (fuzzy)
+        if (this.currentRoom) {
+          const fullInput = trimmed;
+          const matchedItem = this.currentRoom.items.find(
+            i => i.name.toLowerCase().includes(fullInput.toLowerCase()) ||
+                 i.displayName.toLowerCase().includes(fullInput.toLowerCase()) ||
+                 (i.path && i.path.toLowerCase().includes(fullInput.toLowerCase()))
+          );
+          if (matchedItem) return this.cmdExamine(fullInput);
+
+          // try as an exit
+          const matchedExit = [...this.currentRoom.exits.keys()].find(
+            e => e.toLowerCase() === fullInput.toLowerCase() ||
+                 e.toLowerCase().startsWith(fullInput.toLowerCase())
+          );
+          if (matchedExit) return this.cmdGo(matchedExit);
+        }
         this.renderer.print(`Unknown command: ${cmd}. Type 'help' for available commands.`, 'warning');
     }
   }
@@ -328,28 +347,34 @@ export class Engine {
 
     this.renderer.print('');
 
-    // exits (other rooms) first
+    // exits (other rooms) — navigable with 'go'
     const exits = [...this.currentRoom.exits.entries()].filter(([name]) => name !== '..' && name !== 'lobby');
     if (exits.length > 0) {
+      this.renderer.print('  Passages (go <name>):', 'bright');
       for (const [name, path] of exits) {
         const targetRoom = this.dungeon.rooms.get(path);
         const marker = targetRoom?.explored ? 'dim' : 'info';
-        this.renderer.print(`  📁 ${name}/`, marker);
+        this.renderer.print(`    → ${name}`, marker);
       }
+      this.renderer.print('');
     }
 
-    // items in this room
-    for (const item of this.currentRoom.items) {
-      const icon = item.type === 'legendary' ? '✦ ' :
-                   item.type === 'loot' ? '◆ ' :
-                   item.type === 'npc' ? '☻ ' :
-                   item.type === 'trap' ? '▲ ' :
-                   item.type === 'artifact' ? '◈ ' : '  ';
-      const color = item.type === 'legendary' ? 'loot' :
-                    item.type === 'npc' ? 'info' :
-                    item.type === 'trap' ? 'danger' :
-                    item.examined ? 'dim' : undefined;
-      this.renderer.print(`  ${icon}${item.name}`, color);
+    // items — examinable
+    if (this.currentRoom.items.length > 0) {
+      this.renderer.print('  Things here (examine <#>):', 'bright');
+      for (let i = 0; i < this.currentRoom.items.length; i++) {
+        const item = this.currentRoom.items[i];
+        const icon = item.type === 'legendary' ? '✦' :
+                     item.type === 'loot' ? '◆' :
+                     item.type === 'npc' ? '☻' :
+                     item.type === 'trap' ? '▲' :
+                     item.type === 'artifact' ? '◈' : '·';
+        const color = item.type === 'legendary' ? 'loot' :
+                      item.type === 'npc' ? 'info' :
+                      item.type === 'trap' ? 'danger' :
+                      item.examined ? 'dim' : undefined;
+        this.renderer.print(`    ${i + 1}. ${icon} ${item.displayName || item.name}${item.examined ? ' ✓' : ''}`, color);
+      }
     }
 
     if (this.currentRoom.exits.has('..') || this.currentRoom.exits.has('lobby')) {
