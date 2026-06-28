@@ -325,21 +325,36 @@ export class Engine {
       return;
     }
 
-    if (!this.currentRoom.exits.has(direction)) {
-      // fuzzy match
-      const match = [...this.currentRoom.exits.keys()].find(
-        e => e.toLowerCase().startsWith(direction.toLowerCase())
-      );
-      if (match) {
-        direction = match;
-      } else {
-        this.renderer.print(`No exit called '${direction}'. Type 'ls' to see exits.`, 'warning');
+    if (this.currentRoom.exits.has(direction)) {
+      const targetPath = this.currentRoom.exits.get(direction);
+      this.enterRoom(targetPath);
+      return;
+    }
+
+    // fuzzy match against exits
+    const match = [...this.currentRoom.exits.keys()].find(
+      e => e.toLowerCase().startsWith(direction.toLowerCase())
+    );
+    if (match) {
+      const targetPath = this.currentRoom.exits.get(match);
+      this.enterRoom(targetPath);
+      return;
+    }
+
+    // portal navigation: check if direction matches a discovered portal target
+    // or any room in the dungeon by name/id
+    const cleanDir = direction.replace(/^\.\//, '').replace(/^\//, '');
+    for (const [roomId, room] of this.dungeon.rooms) {
+      if (roomId.toLowerCase().includes(cleanDir.toLowerCase()) ||
+          room.name.toLowerCase() === cleanDir.toLowerCase() ||
+          room.name.toLowerCase().startsWith(cleanDir.toLowerCase())) {
+        this.renderer.print(`Portal activated → ${room.name}`, 'info');
+        this.enterRoom(roomId);
         return;
       }
     }
 
-    const targetPath = this.currentRoom.exits.get(direction);
-    this.enterRoom(targetPath);
+    this.renderer.print(`No exit or portal called '${direction}'. Type 'ls' to see exits, or 'map' for all rooms.`, 'warning');
   }
 
   cmdLs() {
