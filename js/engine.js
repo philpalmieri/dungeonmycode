@@ -3,7 +3,8 @@
  */
 
 import * as github from './github.js';
-import { buildDungeon, findPortals, findLoot } from './dungeon.js';
+import { detectAppType, extractRoutes, extractCommands, extractPages } from './analyzer.js';
+import { buildConceptualDungeon, findPortals, findLoot } from './dungeon-builder.js';
 import { Renderer } from './renderer.js';
 
 const COMMANDS = {
@@ -124,17 +125,52 @@ export class Engine {
         github.fetchLanguages(parsed.owner, parsed.repo),
       ]);
 
-      this.renderer.print(`  Found ${treeData.tree.length} passages and chambers...`, 'dim');
-      this.renderer.print('  Populating with monsters and loot...', 'dim');
+      this.renderer.print(`  Found ${treeData.tree.length} files...`, 'dim');
+      this.renderer.print('  Analyzing application structure...', 'dim');
 
-      this.dungeon = buildDungeon(treeData, repoInfo, languages);
+      // detect what kind of app this is
+      const { type: appType, confidence } = await detectAppType(
+        parsed.owner, parsed.repo, treeData, languages
+      );
+      this.renderer.print(`  Detected: ${appType} (confidence: ${confidence})`, 'dim');
+
+      // extract logical structure based on app type
+      let analysis = {};
+      if (appType === 'rest-api' || appType === 'fullstack') {
+        this.renderer.print('  Mapping routes and endpoints...', 'dim');
+        analysis = await extractRoutes(parsed.owner, parsed.repo, treeData);
+      } else if (appType === 'cli') {
+        this.renderer.print('  Discovering commands...', 'dim');
+        const commands = await extractCommands(parsed.owner, parsed.repo, treeData);
+        analysis = { commands };
+      } else if (appType === 'frontend') {
+        this.renderer.print('  Charting pages and views...', 'dim');
+        const pages = await extractPages(parsed.owner, parsed.repo, treeData);
+        analysis = { pages };
+      } else {
+        // fallback: try routes first, then commands
+        analysis = await extractRoutes(parsed.owner, parsed.repo, treeData);
+        if (analysis.routes.length === 0) {
+          const commands = await extractCommands(parsed.owner, parsed.repo, treeData);
+          if (commands.length > 0) analysis = { commands };
+        }
+      }
+
+      this.renderer.print('  Building dungeon from application flow...', 'dim');
+
+      // build the conceptual dungeon
+      const effectiveType = analysis.commands ? 'cli' :
+                            analysis.pages ? 'frontend' : 'rest-api';
+      this.dungeon = buildConceptualDungeon(effectiveType, analysis, repoInfo, languages);
 
       this.renderer.print(`  Dungeon generated: ${this.dungeon.totalRooms} rooms`, 'dim');
+      if (this.dungeon.totalRoutes) this.renderer.print(`  Routes mapped: ${this.dungeon.totalRoutes}`, 'dim');
+      if (this.dungeon.totalCommands) this.renderer.print(`  Commands found: ${this.dungeon.totalCommands}`, 'dim');
       this.renderer.print('');
 
       // enter the dungeon
       this.state = 'playing';
-      this.enterRoom('/');
+      this.enterRoom('lobby');
 
       this.renderer.print('');
       this.renderer.print('Type \'help\' for commands. Type \'look\' to examine your surroundings.', 'dim');
@@ -283,8 +319,8 @@ export class Engine {
 
     this.renderer.print('');
 
-    // directories (exits) first
-    const exits = [...this.currentRoom.exits.entries()].filter(([name]) => name !== '..');
+    // exits (other rooms) first
+    const exits = [...this.currentRoom.exits.entries()].filter(([name]) => name !== '..' && name !== 'lobby');
     if (exits.length > 0) {
       for (const [name, path] of exits) {
         const targetRoom = this.dungeon.rooms.get(path);
@@ -293,21 +329,23 @@ export class Engine {
       }
     }
 
-    // files
+    // items in this room
     for (const item of this.currentRoom.items) {
       const icon = item.type === 'legendary' ? '✦ ' :
                    item.type === 'loot' ? '◆ ' :
                    item.type === 'npc' ? '☻ ' :
+                   item.type === 'trap' ? '▲ ' :
                    item.type === 'artifact' ? '◈ ' : '  ';
       const color = item.type === 'legendary' ? 'loot' :
                     item.type === 'npc' ? 'info' :
+                    item.type === 'trap' ? 'danger' :
                     item.examined ? 'dim' : undefined;
       this.renderer.print(`  ${icon}${item.name}`, color);
     }
 
-    if (this.currentRoom.exits.has('..')) {
+    if (this.currentRoom.exits.has('..') || this.currentRoom.exits.has('lobby')) {
       this.renderer.print('');
-      this.renderer.print('  ← .. (back)', 'dim');
+      this.renderer.print('  ← back (to lobby)', 'dim');
     }
     this.renderer.print('');
   }
@@ -334,62 +372,75 @@ export class Engine {
     this.renderer.print(item.description, 'dim');
     this.renderer.print('');
 
-    // fetch file content
-    this.renderer.print('Reading...', 'dim');
+    // fetch file content if there's a source file
+    const filePath = item.sourceFile || item.path;
+    if (filePath) {
+      this.renderer.print('Reading source...', 'dim');
 
-    try {
-      let content = this.examineCache.get(item.path);
-      if (!content) {
-        content = await github.fetchFile(this.repoOwner, this.repoName, item.path);
-        if (content) this.examineCache.set(item.path, content);
-      }
-
-      if (!content) {
-        this.renderer.print('The contents are unreadable (binary or too large).', 'warning');
-        return;
-      }
-
-      // show first 30 lines
-      const lines = content.split('\n');
-      const preview = lines.slice(0, 30);
-      for (const line of preview) {
-        this.renderer.print(`  ${line}`, 'dim');
-      }
-      if (lines.length > 30) {
-        this.renderer.print(`  ... (${lines.length - 30} more lines)`, 'muted');
-      }
-
-      // find loot
-      const loot = findLoot(content, item.name);
-      if (loot.length > 0) {
-        this.renderer.print('');
-        this.renderer.print(`Found ${loot.length} loot drop${loot.length > 1 ? 's' : ''}!`, 'loot');
-        for (const l of loot) {
-          this.renderer.print(`  [${l.type}] Line ${l.line}: ${l.message}`, 'loot');
-          this.discoveredLoot.push(l);
+      try {
+        let content = this.examineCache.get(filePath);
+        if (!content) {
+          content = await github.fetchFile(this.repoOwner, this.repoName, filePath);
+          if (content) this.examineCache.set(filePath, content);
         }
-      }
 
-      // find portals
-      const portals = findPortals(content, this.currentRoom.path);
-      if (portals.length > 0) {
-        const localPortals = portals.filter(p => p.type === 'local');
-        const extPortals = portals.filter(p => p.type === 'external');
-        if (localPortals.length > 0) {
-          this.renderer.print('');
-          this.renderer.print(`Discovered ${localPortals.length} portal${localPortals.length > 1 ? 's' : ''} to other rooms:`, 'info');
-          for (const p of localPortals) {
-            this.renderer.print(`  → ${p.target}`, 'info');
-            this.discoveredPortals.push(p);
+        if (!content) {
+          this.renderer.print('The source is sealed (binary or too large).', 'dim');
+        } else {
+          // for route items, try to find the relevant handler
+          if (item.method && item.path) {
+            const relevantLines = findRelevantCode(content, item.method, item.path);
+            if (relevantLines.length > 0) {
+              this.renderer.print('');
+              this.renderer.print('Handler code:', 'info');
+              for (const line of relevantLines) {
+                this.renderer.print(`  ${line}`, 'dim');
+              }
+            }
+          } else {
+            // show first 20 lines
+            const lines = content.split('\n').slice(0, 20);
+            for (const line of lines) {
+              this.renderer.print(`  ${line}`, 'dim');
+            }
+            const totalLines = content.split('\n').length;
+            if (totalLines > 20) {
+              this.renderer.print(`  ... (${totalLines - 20} more lines)`, 'muted');
+            }
+          }
+
+          // find loot
+          const loot = findLoot(content, item.name);
+          if (loot.length > 0) {
+            this.renderer.print('');
+            this.renderer.print(`Found ${loot.length} loot drop${loot.length > 1 ? 's' : ''}!`, 'loot');
+            for (const l of loot) {
+              this.renderer.print(`  [${l.type}] Line ${l.line}: ${l.message}`, 'loot');
+              this.discoveredLoot.push(l);
+            }
+          }
+
+          // find portals
+          const portals = findPortals(content);
+          if (portals.length > 0) {
+            const localPortals = portals.filter(p => p.type === 'local');
+            const extPortals = portals.filter(p => p.type === 'external');
+            if (localPortals.length > 0) {
+              this.renderer.print('');
+              this.renderer.print(`Discovered ${localPortals.length} portal${localPortals.length > 1 ? 's' : ''}:`, 'info');
+              for (const p of localPortals) {
+                this.renderer.print(`  → ${p.target}`, 'info');
+                this.discoveredPortals.push(p);
+              }
+            }
+            if (extPortals.length > 0) {
+              this.renderer.print(`  (${extPortals.length} external dependencies)`, 'dim');
+            }
           }
         }
-        if (extPortals.length > 0) {
-          this.renderer.print(`  (${extPortals.length} external dependencies detected)`, 'dim');
-        }
+      } catch (err) {
+        this.renderer.print(`Could not read source: ${err.message}`, 'danger');
       }
-
-    } catch (err) {
-      this.renderer.print(`Could not read file: ${err.message}`, 'danger');
     }
 
     this.renderer.print('');
@@ -402,11 +453,16 @@ export class Engine {
     this.renderer.print('═══ DUNGEON MAP ═══', 'bright');
     this.renderer.print('');
 
-    const printTree = (path, indent = '') => {
-      const room = this.dungeon.rooms.get(path);
+    const visited = new Set();
+
+    const printTree = (roomId, indent = '') => {
+      if (visited.has(roomId)) return;
+      visited.add(roomId);
+
+      const room = this.dungeon.rooms.get(roomId);
       if (!room) return;
 
-      const isCurrentRoom = path === this.currentRoom.path;
+      const isCurrentRoom = roomId === this.currentRoom.path;
       const explored = room.explored;
 
       const marker = isCurrentRoom ? '[@]' : explored ? '[·]' : '[?]';
@@ -417,19 +473,18 @@ export class Engine {
       this.renderer.print(`${indent}${marker} ${room.name}${dangerIcon}`, color);
 
       const childExits = [...room.exits.entries()]
-        .filter(([name]) => name !== '..')
+        .filter(([name, target]) => name !== '..' && name !== 'lobby' && !visited.has(target))
         .sort(([a], [b]) => a.localeCompare(b));
 
       for (let i = 0; i < childExits.length; i++) {
         const [, childPath] = childExits[i];
         const isLast = i === childExits.length - 1;
         const connector = isLast ? '└── ' : '├── ';
-        const nextIndent = indent + (isLast ? '    ' : '│   ');
         printTree(childPath, indent + connector);
       }
     };
 
-    printTree('/');
+    printTree('lobby');
 
     this.renderer.print('');
     this.renderer.print(`[@] = you are here  [·] = explored  [?] = unexplored`, 'dim');
@@ -474,11 +529,13 @@ export class Engine {
 
     let totalLoot = 0;
     for (const item of files) {
+      const filePath = item.sourceFile || item.path;
+      if (!filePath) continue;
       try {
-        let content = this.examineCache.get(item.path);
+        let content = this.examineCache.get(filePath);
         if (!content) {
-          content = await github.fetchFile(this.repoOwner, this.repoName, item.path);
-          if (content) this.examineCache.set(item.path, content);
+          content = await github.fetchFile(this.repoOwner, this.repoName, filePath);
+          if (content) this.examineCache.set(filePath, content);
         }
         if (!content) continue;
 
@@ -563,4 +620,30 @@ export class Engine {
     this.state = 'menu';
     this.showWelcome();
   }
+}
+
+/**
+ * Find the relevant code around a route handler definition
+ */
+function findRelevantCode(content, method, routePath) {
+  const lines = content.split('\n');
+  const results = [];
+
+  // find the line that defines this route
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lowerLine = line.toLowerCase();
+
+    if (lowerLine.includes(method.toLowerCase()) && line.includes(routePath)) {
+      // grab context: 2 lines before, the match, and up to 15 lines of the handler
+      const start = Math.max(0, i - 1);
+      const end = Math.min(lines.length, i + 15);
+      for (let j = start; j < end; j++) {
+        results.push(lines[j]);
+      }
+      break;
+    }
+  }
+
+  return results.slice(0, 20);
 }
